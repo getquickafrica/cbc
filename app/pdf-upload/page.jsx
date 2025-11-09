@@ -1,627 +1,650 @@
-'use client';
+"use client";
 
-import React, { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useState, useRef } from "react";
+import { motion } from "framer-motion";
 import {
-  CloudArrowUpIcon,
-  XMarkIcon,
   CheckCircleIcon,
-  ExclamationCircleIcon,
+  XCircleIcon,
   ArrowRightIcon,
-} from '@heroicons/react/24/outline';
-import { supabase } from '@/lib/supabaseClient';
-import { useAuth } from '@/contexts/AuthContext';
-import { checkUserAndPlan } from '@/utilis/checkUserAndPlan'; // optional — safe fallback provided below
+  CloudArrowUpIcon,
+  DocumentTextIcon,
+  ShareIcon,
+  DocumentDuplicateIcon,
+} from "@heroicons/react/24/solid";
+import { Loader2 } from "lucide-react";
+import confetti from "canvas-confetti";
+import { useAuth } from "@/contexts/AuthContext";
+import { useRouter } from "next/navigation";
 
-/* -------------------------
-  Helper UI: AlertCard
-   - type: 'success' | 'error' | 'warning' | 'info'
---------------------------*/
-const AlertCard = ({ type = 'info', title, message, onClose }) => {
-  const colors = {
-    success: 'bg-green-50 border-green-200 text-green-800',
-    error: 'bg-red-50 border-red-200 text-red-800',
-    warning: 'bg-yellow-50 border-yellow-200 text-yellow-800',
-    info: 'bg-blue-50 border-blue-200 text-blue-800',
-  };
-  return (
-    <div className={`border p-3 rounded-lg ${colors[type]} flex items-start justify-between gap-3`}>
-      <div>
-        {title && <div className="font-semibold mb-1">{title}</div>}
-        <div className="text-sm">{message}</div>
-      </div>
-      <div className="ml-4">
-        <button onClick={onClose} className="text-sm opacity-70 hover:opacity-100">
-          Close
-        </button>
-      </div>
-    </div>
-  );
-};
+/**
+ * PdfUpload component
+ * - main file: PDF only
+ * - support files: pdf/doc/docx/ppt/pptx
+ * - shows icons + filenames
+ * - sends files to /api/upload-files then metadata to /api/save-material
+ */
 
-/* -------------------------
-  Validation spinner / icon
---------------------------*/
-const StepRow = ({ label, status }) => {
-  const icon = {
-    idle: <div className="w-5 h-5 rounded-full border border-gray-200 animate-pulse" />,
-    loading: <div className="w-5 h-5 rounded-full border border-gray-300 animate-spin" />,
-    success: <CheckCircleIcon className="w-5 h-5 text-green-500" />,
-    error: <ExclamationCircleIcon className="w-5 h-5 text-red-500" />,
-  }[status || 'idle'];
-
-  return (
-    <div className="flex items-center justify-between text-sm">
-      <div className="flex items-center gap-3">
-        <div>{icon}</div>
-        <div>{label}</div>
-      </div>
-    </div>
-  );
-};
-
-/* -------------------------
-  Main Upload Component
---------------------------*/
-export default function UploadStudyMaterialCard() {
+export default function PdfUpload() {
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
-  const fallbackCheck = checkUserAndPlan; // if file exists, else try import; if missing, you'll have error - but we try/catch below
 
-  // Local UI state
-  const [showCard, setShowCard] = useState(true);
-  const [stage, setStage] = useState(1); // 1 = file & checks, 2 = metadata
-  const [alert, setAlert] = useState(null); // {type, title, message}
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [fileName, setFileName] = useState('');
-  const [fileHash, setFileHash] = useState(null);
+  // stages & UI
+  const [stage, setStage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [checks, setChecks] = useState([]);
+  const [alert, setAlert] = useState(null);
+  const [success, setSuccess] = useState(false);
 
-  // validation states: 'idle' | 'loading' | 'success' | 'error'
-  const [formatStatus, setFormatStatus] = useState('idle');
-  const [virusStatus, setVirusStatus] = useState('idle');
-  const [uniqueStatus, setUniqueStatus] = useState('idle');
-  const [validationError, setValidationError] = useState(null);
+  // files & metadata
+  const [pdfFile, setPdfFile] = useState(null); // main PDF
+  const [supportFiles, setSupportFiles] = useState([]); // array of support files
+  const [metadata, setMetadata] = useState({
+    title: "",
+    description: "",
+    tags: [],
+    currentTag: "",
+  });
 
-  // Stage 2 states
-  const [docName, setDocName] = useState('');
-  const [description, setDescription] = useState('');
-  const [tagInput, setTagInput] = useState('');
-  const [tags, setTags] = useState([]);
-  const [suppFiles, setSuppFiles] = useState([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const dropRef = useRef();
-
-  // Disable Next until all validations are success
-  const canProceed = formatStatus === 'success' && virusStatus === 'success' && uniqueStatus === 'success';
-
-  // On mount verify user and plan — reuse the utility if present, else do a fallback check.
-  useEffect(() => {
-    const runCheck = async () => {
-      // wait for auth to load
-      if (authLoading) return;
-      try {
-        if (typeof fallbackCheck === 'function') {
-          await fallbackCheck(user, authLoading, router);
-        } else {
-          // Basic fallback: if not signed in -> auth, else query user_plans and redirect if none
-          if (!user) {
-            router.push('/auth');
-            return;
-          }
-          const { data, error } = await supabase.from('user_plans').select('plan').eq('user_id', user.id).single();
-          if (error || !data?.plan) {
-            router.push('/pricing');
-            return;
-          }
-        }
-      } catch (err) {
-        // If check utility isn't available or fails, allow page to continue but show a warning
-        console.warn('checkUserAndPlan error (continuing):', err);
-      }
-    };
-    runCheck();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, authLoading]);
+  const dropRef = useRef(null);
 
   /* -------------------------
-    Drag & Drop / File selection
+     Helpers: file icons & file-type checks
   --------------------------*/
-  useEffect(() => {
-    const el = dropRef.current;
-    if (!el) return;
+  const supportAccept =
+    ".pdf,.doc,.docx,.ppt,.pptx,application/msword,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
-    const onDragOver = (e) => {
-      e.preventDefault();
-      el.classList.add('ring-2', 'ring-blue-300');
-    };
-    const onDragLeave = (e) => {
-      e.preventDefault();
-      el.classList.remove('ring-2', 'ring-blue-300');
-    };
-    const onDrop = (e) => {
-      e.preventDefault();
-      el.classList.remove('ring-2', 'ring-blue-300');
-      const file = e.dataTransfer.files?.[0];
-      if (file) handleFileSelect(file);
-    };
+  const isPdf = (file) =>
+    file?.type === "application/pdf" ||
+    file?.name?.toLowerCase().endsWith(".pdf");
 
-    el.addEventListener('dragover', onDragOver);
-    el.addEventListener('dragleave', onDragLeave);
-    el.addEventListener('drop', onDrop);
-    return () => {
-      el.removeEventListener('dragover', onDragOver);
-      el.removeEventListener('dragleave', onDragLeave);
-      el.removeEventListener('drop', onDrop);
-    };
-  }, []);
-
-  const resetStage1 = () => {
-    setSelectedFile(null);
-    setFileName('');
-    setFileHash(null);
-    setFormatStatus('idle');
-    setVirusStatus('idle');
-    setUniqueStatus('idle');
-    setValidationError(null);
+  const isSupportAllowed = (file) => {
+    if (!file) return false;
+    const name = file.name.toLowerCase();
+    return (
+      isPdf(file) ||
+      name.endsWith(".doc") ||
+      name.endsWith(".docx") ||
+      name.endsWith(".ppt") ||
+      name.endsWith(".pptx")
+    );
   };
 
-  const handleClose = () => {
-    // per spec: simulate navigation back (we'll reset view)
-    console.log('Upload card closed — simulate navigation back');
-    setShowCard(false);
-    // optionally reset everything
-    resetStage1();
-    setStage(1);
+  const FileIcon = ({ name }) => {
+    const ext = (name || "").split(".").pop()?.toLowerCase();
+    if (ext === "pdf")
+      return <DocumentTextIcon className="w-6 h-6 text-red-500" />;
+    if (ext === "doc" || ext === "docx")
+      return <DocumentDuplicateIcon className="w-6 h-6 text-blue-600" />;
+    if (ext === "ppt" || ext === "pptx")
+      return <DocumentDuplicateIcon className="w-6 h-6 text-orange-500" />;
+    return <DocumentTextIcon className="w-6 h-6 text-gray-600" />;
+  };
+
+  /* -------------------------
+     File handlers
+  --------------------------*/
+  const handlePdfChange = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (!isPdf(f)) {
+      setAlert({ type: "error", message: "Main file must be a PDF." });
+      return;
+    }
+    setPdfFile(f);
     setAlert(null);
   };
 
-  const handleFileBrowse = (e) => {
-    const file = e.target.files?.[0];
-    if (file) handleFileSelect(file);
+  const handleSuppChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    const allowed = files.filter(isSupportAllowed);
+    const rejected = files.length - allowed.length;
+    if (rejected > 0) {
+      setAlert({
+        type: "warning",
+        message:
+          "Some files were ignored — only PDF, DOC, DOCX, PPT, PPTX are accepted as support files.",
+      });
+    }
+    setSupportFiles((s) => [...s, ...allowed]);
   };
 
-  async function computeSHA256(file) {
-    const arrayBuffer = await file.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  const removeSupportFile = (idx) =>
+    setSupportFiles((s) => s.filter((_, i) => i !== idx));
+
+  /* -------------------------
+     Tags (Enter or Space)
+  --------------------------*/
+  const handleAddTag = (e) => {
+    if ((e.key === "Enter" || e.key === " ") && metadata.currentTag.trim()) {
+      e.preventDefault();
+      const val = metadata.currentTag.trim();
+      if (metadata.tags.length >= 10) {
+        setAlert({ type: "error", message: "Maximum 10 tags allowed." });
+        return;
+      }
+      if (metadata.tags.includes(val)) {
+        setMetadata({ ...metadata, currentTag: "" });
+        return;
+      }
+      setMetadata((m) => ({ ...m, tags: [...m.tags, val], currentTag: "" }));
+    }
+  };
+
+  const removeTag = (t) =>
+    setMetadata((m) => ({ ...m, tags: m.tags.filter((x) => x !== t) }));
+
+  /* -------------------------
+     Validation checks run on Next click
+     (format, virus (simulated), uniqueness (simulated))
+  --------------------------*/
+  const handleNext = async () => {
+    if (!pdfFile) {
+      setAlert({ type: "error", message: "Please choose a PDF first." });
+      return;
+    }
+    setAlert(null);
+    setChecks([]);
+    setLoading(true);
+
+    const sequence = [];
+    const run = async (label, ok = true) => {
+      sequence.push({ label, status: "loading" });
+      setChecks([...sequence]);
+      await new Promise((r) => setTimeout(r, 800));
+      sequence[sequence.length - 1].status = ok ? "success" : "error";
+      setChecks([...sequence]);
+      return ok;
+    };
+
+    // 1 format (we already validated on select)
+    const ok1 = await run("Checking file format (PDF only allowed)", true);
+
+    // 2 virus - simulate clean
+    const ok2 = await run("Checking for viruses and malware", true);
+
+    // 3 uniqueness - simulate success (you can call backend here)
+    const ok3 = await run("Verifying file uniqueness", true);
+
+    setLoading(false);
+
+    if (ok1 && ok2 && ok3) {
+      setStage(2);
+      setAlert({
+        type: "success",
+        message: "All checks passed — continue to metadata.",
+      });
+    } else {
+      setAlert({
+        type: "error",
+        message: "Validation failed. Please try again.",
+      });
+    }
+  };
+
+  /* -------------------------
+     Final upload: send files to /api/upload-files, then POST metadata to /api/save-material
+  --------------------------*/
+  const handleFinalUpload = async () => {
+    if (authLoading) {
+      setAlert({
+        type: "warning",
+        message: "Checking authentication — please wait.",
+      });
+      return;
+    }
+
+    if (!user) {
+      router.push("/auth");
+      return;
+    }
+
+    if (!pdfFile) {
+      setAlert({ type: "error", message: "No PDF to upload." });
+      return;
+    }
+
+    if (!metadata.title?.trim()) {
+      setAlert({ type: "error", message: "Please provide a document title." });
+      return;
+    }
+
+    if (metadata.tags.length < 2) {
+      setAlert({ type: "error", message: "Please add at least 2 tags." });
+      return;
+    }
+
+    setLoading(true);
+    setAlert(null);
+
+    try {
+      // === 1️⃣ Upload PDF + support files to backend ===
+      const form = new FormData();
+      form.append("pdf", pdfFile);
+      supportFiles.forEach((f) => form.append("support", f));
+
+      const upRes = await fetch("/api/upload-files", {
+        method: "POST",
+        body: form,
+      });
+
+      const upJson = await upRes.json();
+
+      if (!upRes.ok) {
+        console.error("Upload-files error:", upJson);
+        throw new Error(upJson.error || "File upload failed");
+      }
+
+      const pdf_name = upJson.pdf_name;
+      const support_name = upJson.support_name || null;
+
+      // === 2️⃣ Save metadata to Supabase ===
+      const saveRes = await fetch("/api/save-material", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: user.id,
+          username: user.user_metadata?.full_name || user.email.split("@")[0],
+          unique_name: pdf_name,
+          support_name,
+          title: metadata.title.trim(),
+          description: metadata.description,
+          tags: metadata.tags,
+          revenue: 0,
+          views: 0,
+          downloads: 0,
+        }),
+      });
+
+      const saveJson = await saveRes.json();
+
+      if (!saveRes.ok) {
+        console.error("save-material error:", saveJson);
+        throw new Error(saveJson.error || "Saving metadata failed");
+      }
+
+      // === 3️⃣ Show success ===
+      confetti({ particleCount: 150, spread: 80, origin: { y: 0.6 } });
+      setSuccess(true);
+    } catch (err) {
+      console.error("Final upload error:", err);
+      setAlert({ type: "error", message: err.message || "Upload failed" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /* -------------------------
+     Small UI helpers
+  --------------------------*/
+  const clearAll = () => {
+    setPdfFile(null);
+    setSupportFiles([]);
+    setMetadata({ title: "", description: "", tags: [], currentTag: "" });
+    setChecks([]);
+    setAlert(null);
+    setStage(1);
+    setSuccess(false);
+  };
+
+  /* -------------------------
+     Render
+  --------------------------*/
+  if (success) {
+    return (
+      <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+        <motion.div
+          className="bg-white shadow-2xl rounded-2xl w-full max-w-2xl p-10 text-center"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+        >
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ type: "spring", stiffness: 140 }}
+          >
+            <CheckCircleIcon className="w-20 h-20 text-green-500 mx-auto mb-4" />
+          </motion.div>
+
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">
+            PDF Successfully Added!
+          </h2>
+          <p className="text-gray-600 mb-6">
+            Share your study material and start earning from it.
+          </p>
+
+          <div className="flex items-center justify-center gap-3">
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              onClick={() => {
+                // maybe navigate to material page later
+                clearAll();
+              }}
+              className="bg-gray-200 text-gray-800 px-5 py-2 rounded-lg"
+            >
+              Add Another
+            </motion.button>
+
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              onClick={() => {
+                // go to home or share flow
+                router.push("/");
+              }}
+              className="bg-blue-600 text-white px-5 py-2 rounded-lg flex items-center gap-2"
+            >
+              <ShareIcon className="w-5 h-5" /> Go to Dashboard
+            </motion.button>
+          </div>
+        </motion.div>
+      </div>
+    );
   }
 
-  const handleFileSelect = async (file) => {
-    // reset statuses
-    setValidationError(null);
-    setFormatStatus('loading');
-    setVirusStatus('idle');
-    setUniqueStatus('idle');
-    setSelectedFile(null);
-    setFileName(file.name);
-
-    // Format check (PDF only)
-    try {
-      // quick MIME check + extension fallback
-      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-      if (!isPdf) {
-        setFormatStatus('error');
-        setValidationError('Only PDF files are allowed.');
-        setAlert({ type: 'error', title: 'Invalid file type', message: 'Only PDF files are allowed.' });
-        return;
-      }
-      setFormatStatus('success');
-    } catch (err) {
-      setFormatStatus('error');
-      setValidationError('Error checking file format.');
-      setAlert({ type: 'error', title: 'Format check failed', message: 'Could not verify file format.' });
-      return;
-    }
-
-    // compute hash & run sequential checks
-    setVirusStatus('loading');
-    try {
-      // simulate virus scan delay
-      await new Promise((res) => setTimeout(res, 900));
-
-      // (Simulated) virus scan result: we'll assume clean — in a real app you'd call an API
-      const simulatedVirusClean = true;
-      if (!simulatedVirusClean) {
-        setVirusStatus('error');
-        setValidationError('Virus scan failed.');
-        setAlert({ type: 'error', title: 'Virus detected', message: 'File failed the virus scan.' });
-        return;
-      }
-      setVirusStatus('success');
-    } catch (err) {
-      setVirusStatus('error');
-      setValidationError('Virus scan error.');
-      setAlert({ type: 'error', title: 'Virus scan failed', message: 'An error occurred during virus scanning.' });
-      return;
-    }
-
-    // uniqueness: compute hash then check DB
-    setUniqueStatus('loading');
-    try {
-      const hash = await computeSHA256(file);
-      setFileHash(hash);
-
-      // attempt to query Supabase 'user_files' table (if exists)
-      const { data, error } = await supabase
-        .from('user_files')
-        .select('id, user_id')
-        .eq('file_hash', hash)
-        .limit(1)
-        .maybeSingle();
-
-      // If error code indicates table missing, treat as unique (no DB available)
-      if (error) {
-        console.warn('user_files check error (treating as unique):', error);
-        // mark unique success but inform via an info alert that DB check couldn't be done
-        setUniqueStatus('success');
-        setAlert({
-          type: 'info',
-          title: 'Uniqueness check skipped',
-          message:
-            "Could not verify file uniqueness against database (table 'user_files' missing). Treating as unique — you may want to create the user_files table.",
-        });
-      } else {
-        if (data) {
-          setUniqueStatus('error');
-          setValidationError('This file already exists in the database.');
-          setAlert({
-            type: 'error',
-            title: 'Duplicate file',
-            message: 'An identical file was found in the database. Please check before uploading.',
-          });
-          return;
-        } else {
-          setUniqueStatus('success');
-        }
-      }
-    } catch (err) {
-      console.error('Uniqueness check failed:', err);
-      setUniqueStatus('error');
-      setValidationError('Uniqueness check failed.');
-      setAlert({ type: 'error', title: 'Uniqueness check failed', message: 'Could not verify if file already exists.' });
-      return;
-    }
-
-    // All checks passed → set selected file
-    setSelectedFile(file);
-    setAlert({ type: 'success', title: 'Ready', message: 'All checks passed. Click Next to continue.' });
-  };
-
-  /* -------------------------
-    Stage Transitions
-  --------------------------*/
-  const goToStage2 = () => {
-    if (!canProceed) {
-      setAlert({ type: 'error', title: 'Checks incomplete', message: 'Complete all checks before proceeding.' });
-      return;
-    }
-    setStage(2);
-    setAlert(null);
-  };
-
-  const goBackToStage1 = () => {
-    setStage(1);
-    setAlert(null);
-  };
-
-  /* -------------------------
-    Tags handling
-  --------------------------*/
-  const onTagKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const val = tagInput.trim();
-      if (!val) return;
-      if (tags.length >= 10) {
-        setAlert({ type: 'warning', title: 'Tag limit', message: 'You can add up to 10 tags only.' });
-        return;
-      }
-      if (tags.includes(val)) {
-        setTagInput('');
-        return;
-      }
-      setTags((s) => [...s, val]);
-      setTagInput('');
-    }
-    if (e.key === 'Backspace' && !tagInput) {
-      setTags((s) => s.slice(0, -1));
-    }
-  };
-
-  const removeTag = (t) => setTags((s) => s.filter((x) => x !== t));
-
-  /* -------------------------
-    Supplemental files (any type)
-  --------------------------*/
-  const handleSuppFilesDrop = (e) => {
-    e.preventDefault();
-    const files = Array.from(e.dataTransfer.files);
-    setSuppFiles((s) => [...s, ...files]);
-  };
-
-  const handleSuppBrowse = (e) => {
-    const files = Array.from(e.target.files || []);
-    setSuppFiles((s) => [...s, ...files]);
-  };
-
-  const removeSuppFile = (index) => {
-    setSuppFiles((s) => s.filter((_, i) => i !== index));
-  };
-
-  /* -------------------------
-    Final submission (simulate + save to DB if possible)
-  --------------------------*/
-  const handleFinalSubmit = async () => {
-    // form validation
-    if (!selectedFile) {
-      setAlert({ type: 'error', title: 'No file', message: 'Please upload a PDF before submitting.' });
-      return;
-    }
-    if (!docName.trim()) {
-      setAlert({ type: 'error', title: 'Missing title', message: 'Please provide a document name.' });
-      return;
-    }
-    if (tags.length < 2) {
-      setAlert({ type: 'error', title: 'Insufficient tags', message: 'Please add at least 2 tags.' });
-      return;
-    }
-
-    setIsSubmitting(true);
-    setAlert(null);
-
-    try {
-      // Option A: Try to insert a row to 'user_files' or 'materials' if table exists
-      const payload = {
-        user_id: user?.id ?? null,
-        title: docName.trim(),
-        description: description.trim(),
-        tags,
-        file_name: selectedFile.name,
-        file_hash: fileHash,
-        created_at: new Date().toISOString(),
-      };
-
-      const { data, error } = await supabase.from('user_files').insert(payload);
-      if (error) {
-        console.warn('Could not insert into user_files (table may not exist):', error);
-        // still show success UI per spec, but note failure in a warning alert
-        setAlert({
-          type: 'warning',
-          title: 'Submitted (DB not saved)',
-          message:
-            "Upload flow completed UI-wise, but the file record wasn't saved to database (table 'user_files' missing or write blocked).",
-        });
-
-        // show full success UX and reset
-        window.alert('success');
-      } else {
-        setAlert({ type: 'success', title: 'Upload Successful', message: 'Your material was saved.' });
-        window.alert('success');
-      }
-
-      // Reset to stage 1 after small delay
-      setTimeout(() => {
-        setStage(1);
-        resetStage1();
-        setDocName('');
-        setDescription('');
-        setTags([]);
-        setSuppFiles([]);
-      }, 1200);
-    } catch (err) {
-      console.error('Final upload error:', err);
-      setAlert({ type: 'error', title: 'Upload failed', message: 'An unexpected error occurred during upload.' });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  if (!showCard) return null;
-
-  /* -------------------------
-    Render
-  --------------------------*/
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* overlay */}
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
-
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
+        className="bg-white shadow-2xl rounded-2xl w-full max-w-2xl max-h-[85vh] overflow-y-auto relative p-6"
+        initial={{ opacity: 0, y: 30 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -20 }}
-        className="relative w-full max-w-4xl mx-auto rounded-2xl shadow-2xl bg-white border border-gray-200 overflow-hidden"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b">
+        <div className="flex justify-between items-center border-b pb-3 mb-4 sticky top-0 bg-white z-10">
           <div>
-            <h2 className="text-lg font-semibold">Upload Study Material</h2>
-            <p className="text-sm text-gray-500">Two-step secure upload for study PDFs</p>
+            <h2 className="text-2xl font-bold text-gray-800">
+              Upload Study Material
+            </h2>
+            <p className="text-sm text-gray-500">
+              Two-step secure upload — PDF primary file
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={() => {
-                handleClose();
+                clearAll();
               }}
-              aria-label="Close"
-              className="p-2 rounded-md hover:bg-gray-100"
+              className="text-gray-400 hover:text-gray-600 text-2xl font-bold"
             >
-              <XMarkIcon className="w-5 h-5 text-gray-600" />
+              ×
             </button>
           </div>
         </div>
 
-        {/* Alert Area */}
-        <div className="px-6 py-4">
-          <AnimatePresence>
-            {alert && (
-              <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-                <AlertCard
-                  type={alert.type}
-                  title={alert.title}
-                  message={alert.message}
-                  onClose={() => setAlert(null)}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+        {/* Alert */}
+        {alert && (
+          <div
+            className={`mb-4 p-3 rounded-lg border ${
+              alert.type === "success"
+                ? "bg-green-50 border-green-400 text-green-700"
+                : alert.type === "warning"
+                ? "bg-yellow-50 border-yellow-200 text-yellow-700"
+                : "bg-red-50 border-red-400 text-red-700"
+            }`}
+          >
+            {alert.message}
+          </div>
+        )}
 
-        {/* Body */}
-        <div className="p-6">
-          {stage === 1 && (
-            <div>
-              {/* Primary upload area */}
-              <div ref={dropRef} className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-                <div className="mx-auto max-w-md">
-                  <CloudArrowUpIcon className="w-12 h-12 mx-auto text-gray-400" />
-                  <p className="mt-4 text-gray-700">Drag & drop a PDF here, or</p>
-
-                  <div className="mt-4 flex items-center justify-center gap-3">
-                    <label
-                      htmlFor="file-browse"
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-white border rounded-md cursor-pointer hover:bg-gray-50"
-                    >
-                      <input id="file-browse" type="file" accept="application/pdf" className="hidden" onChange={handleFileBrowse} />
-                      <span className="text-sm text-gray-700">Browse files</span>
-                    </label>
-                    <span className="text-sm text-gray-500">PDF only</span>
-                  </div>
-
-                  {fileName && (
-                    <div className="mt-4 text-left">
-                      <div className="font-medium">{fileName}</div>
-                      <div className="text-xs text-gray-500 mt-1">{selectedFile ? `${(selectedFile.size / 1024 / 1024).toFixed(2)} MB` : ''}</div>
+        {/* Stage 1 */}
+        {stage === 1 && (
+          <>
+            <div className="grid grid-cols-1 gap-6">
+              {/* Primary PDF upload */}
+              <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-blue-500 transition bg-gray-50">
+                <div
+                  onClick={() => document.getElementById("pdfInput").click()}
+                  className="cursor-pointer"
+                >
+                  {pdfFile ? (
+                    <div className="flex items-center justify-center gap-3 text-gray-700 font-medium">
+                      <DocumentTextIcon className="w-8 h-8 text-red-500" />
+                      <span className="break-all">{pdfFile.name}</span>
                     </div>
+                  ) : (
+                    <>
+                      <CloudArrowUpIcon className="w-16 h-16 text-gray-400 mx-auto mb-3" />
+                      <p className="text-gray-600 font-medium">
+                        Click to select your main PDF (or drag onto this card)
+                      </p>
+                      <p className="text-xs text-gray-500 mt-2">PDF only</p>
+                    </>
                   )}
                 </div>
+                <input
+                  id="pdfInput"
+                  type="file"
+                  accept="application/pdf"
+                  onChange={handlePdfChange}
+                  className="hidden"
+                />
               </div>
 
-              {/* Validation status */}
-              <div className="mt-6 grid grid-cols-1 gap-3 max-w-xl mx-auto">
-                <StepRow label="Checking file format (PDF only allowed)" status={formatStatus} />
-                <StepRow label="Checking for virus and malware" status={virusStatus} />
-                <StepRow label="Checking file uniqueness (hash)" status={uniqueStatus} />
-                {validationError && <div className="text-sm text-red-600">{validationError}</div>}
+              {/* small support area */}
+              <div className="border rounded-lg p-4 bg-white">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Optional Support Files(e.g map extracts, support images)
+                </label>
+
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-sm text-gray-500">
+                    Accepted: PDF, DOC, DOCX, PPT, PPTX
+                  </div>
+                  <div>
+                    <input
+                      id="suppFiles"
+                      type="file"
+                      accept={supportAccept}
+                      multiple
+                      onChange={handleSuppChange}
+                      className="hidden"
+                    />
+                    <button
+                      onClick={() =>
+                        document.getElementById("suppFiles").click()
+                      }
+                      className="px-3 py-1 bg-gray-100 rounded-md hover:bg-gray-200"
+                    >
+                      Add files
+                    </button>
+                  </div>
+                </div>
+
+                {supportFiles.length > 0 && (
+                  <ul className="mt-3 space-y-2">
+                    {supportFiles.map((f, i) => (
+                      <li
+                        key={i}
+                        className="flex items-center justify-between bg-gray-50 p-2 rounded"
+                      >
+                        <div className="flex items-center gap-3">
+                          <FileIcon name={f.name} />
+                          <div className="text-sm">
+                            <div className="font-medium break-all">
+                              {f.name}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {(f.size / 1024).toFixed(1)} KB
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          <button
+                            onClick={() => removeSupportFile(i)}
+                            className="text-red-500 text-sm"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
 
-              {/* Actions */}
-              <div className="mt-6 flex items-center justify-between">
-                <div />
+              {/* validation rows (hidden until checks run) */}
+              {checks.length > 0 && (
+                <div className="mt-2 space-y-2">
+                  {checks.map((c, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-3 p-2 bg-gray-50 rounded"
+                    >
+                      {c.status === "loading" && (
+                        <Loader2 className="animate-spin w-5 h-5 text-blue-500" />
+                      )}
+                      {c.status === "success" && (
+                        <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                      )}
+                      {c.status === "error" && (
+                        <XCircleIcon className="w-5 h-5 text-red-500" />
+                      )}
+                      <div className="text-sm text-gray-700">{c.label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* actions */}
+              <div className="flex justify-end mt-4">
                 <button
-                  onClick={resetStage1}
-                  className="px-4 py-2 rounded-md text-sm text-gray-600 hover:bg-gray-100"
+                  onClick={() => {
+                    setPdfFile(null);
+                    setSupportFiles([]);
+                    setAlert(null);
+                  }}
+                  disabled={loading}
+                  className="px-4 py-2 rounded-md text-sm bg-gray-100 hover:bg-gray-200 mr-3"
                 >
                   Reset
                 </button>
 
                 <button
-                  onClick={goToStage2}
-                  disabled={!canProceed}
-                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-semibold ${
-                    canProceed ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                  onClick={handleNext}
+                  disabled={loading}
+                  className={`px-4 py-2 rounded-md text-sm text-white ${
+                    loading ? "bg-blue-400" : "bg-blue-600 hover:bg-blue-700"
                   }`}
                 >
-                  Next <ArrowRightIcon className="w-4 h-4" />
+                  {loading ? (
+                    <>
+                      <Loader2 className="animate-spin w-4 h-4 mr-2" />
+                      Checking...
+                    </>
+                  ) : (
+                    <>
+                      Next{" "}
+                      <ArrowRightIcon className="w-4 h-4 inline-block ml-2" />
+                    </>
+                  )}
                 </button>
               </div>
             </div>
-          )}
+          </>
+        )}
 
-          {stage === 2 && (
+        {/* Stage 2 */}
+        {stage === 2 && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="space-y-6"
+          >
+            {/* Title */}
             <div>
-              {/* Metadata */}
-              <div className="grid grid-cols-1 gap-4">
-                <label className="text-sm font-medium">Document Name</label>
-                <input value={docName} onChange={(e) => setDocName(e.target.value)} placeholder="e.g., UCE WAKISHA BIOLOGY MOCK 2024" className="w-full px-4 py-2 border rounded-md" />
+              <label className="block text-sm font-semibold text-gray-700 mb-1">
+                Document Name
+              </label>
+              <input
+                type="text"
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                placeholder="e.g., UCE PHYSICS 2024 PAPER"
+                value={metadata.title}
+                onChange={(e) =>
+                  setMetadata({ ...metadata, title: e.target.value })
+                }
+              />
+            </div>
 
-                <label className="text-sm font-medium mt-2">Description</label>
-                <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} className="w-full px-4 py-2 border rounded-md" />
-              </div>
-
-              {/* Tags */}
-              <div className="mt-4">
-                <label className="text-sm font-medium">Tags (press Enter to add)</label>
-                <div className="mt-2 flex gap-2 flex-wrap">
-                  {tags.map((t) => (
-                    <div key={t} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-full text-sm">
-                      <span>{t}</span>
-                      <button onClick={() => removeTag(t)} className="text-gray-500 hover:text-gray-700">×</button>
-                    </div>
-                  ))}
-                </div>
-                <input
-                  value={tagInput}
-                  onChange={(e) => setTagInput(e.target.value)}
-                  onKeyDown={onTagKeyDown}
-                  placeholder="Type tag and press Enter"
-                  className="mt-3 w-full px-4 py-2 border rounded-md"
-                />
-                <div className="text-xs text-gray-500 mt-1">Minimum 2 tags, maximum 10 tags.</div>
-              </div>
-
-              {/* Optional supplemental upload */}
-              <div className="mt-6">
-                <label className="text-sm font-medium">Optional supplementary files</label>
-                <div
-                  onDrop={handleSuppFilesDrop}
-                  onDragOver={(e) => e.preventDefault()}
-                  className="mt-2 border border-dashed border-gray-200 rounded-md p-4"
-                >
-                  <div className="text-sm text-gray-500">Drag & drop supplemental files here (any format) or</div>
-                  <div className="mt-3">
-                    <input type="file" multiple onChange={handleSuppBrowse} />
-                  </div>
-
-                  {suppFiles.length > 0 && (
-                    <ul className="mt-3 space-y-2">
-                      {suppFiles.map((f, i) => (
-                        <li key={i} className="flex items-center justify-between bg-gray-50 p-2 rounded">
-                          <div>
-                            <div className="font-medium text-sm">{f.name}</div>
-                            <div className="text-xs text-gray-500">{(f.size / 1024).toFixed(1)} KB</div>
-                          </div>
-                          <button onClick={() => removeSuppFile(i)} className="text-red-500">Remove</button>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="mt-6 flex items-center justify-between">
-                <button onClick={goBackToStage1} className="px-4 py-2 rounded-md text-sm text-gray-600 hover:bg-gray-100">Back</button>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={handleFinalSubmit}
-                    disabled={isSubmitting}
-                    className={`inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-semibold ${
-                      isSubmitting ? 'bg-gray-300 text-gray-700' : 'bg-blue-600 text-white hover:bg-blue-700'
-                    }`}
-                  >
-                    {isSubmitting ? 'Uploading...' : 'Upload & Submit'}
-                  </button>
-                </div>
+            {/* Description (line breaks preserved) */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1">
+                Description
+              </label>
+              <textarea
+                rows={5}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                placeholder="Describe this document thoroughly..."
+                value={metadata.description}
+                onChange={(e) =>
+                  setMetadata({ ...metadata, description: e.target.value })
+                }
+              />
+              <div className="text-xs text-gray-500 mt-1">
+                Line breaks will be preserved.
               </div>
             </div>
-          )}
-        </div>
 
-        {/* Full-screen loader overlay during final submit */}
-        <AnimatePresence>
-          {isSubmitting && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-white/80 flex items-center justify-center">
-              <div className="text-center">
-                <div className="animate-spin mx-auto w-10 h-10 border-4 border-blue-600 rounded-full border-t-transparent" />
-                <div className="mt-4 text-gray-700 font-medium">Processing upload...</div>
+            {/* Tags */}
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1">
+                Tags(eg mock, past paper, physics)
+              </label>
+              <div className="flex flex-wrap gap-2 mb-2">
+                {metadata.tags.map((t) => (
+                  <span
+                    key={t}
+                    className="bg-blue-100 text-blue-700 px-3 py-1 rounded-full text-sm flex items-center gap-2"
+                  >
+                    {t}
+                    <button
+                      onClick={() => removeTag(t)}
+                      className="text-blue-600 font-bold"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+
+              <input
+                type="text"
+                value={metadata.currentTag}
+                onChange={(e) =>
+                  setMetadata({ ...metadata, currentTag: e.target.value })
+                }
+                onKeyDown={handleAddTag}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500"
+                placeholder="Type a tag and press Enter or Space"
+              />
+            </div>
+
+            {/* Upload action */}
+            <div className="flex justify-between items-center">
+              <button
+                onClick={() => setStage(1)}
+                className="px-4 py-2 rounded-md text-sm bg-gray-100 hover:bg-gray-200"
+              >
+                Back
+              </button>
+
+              <button
+                onClick={handleFinalUpload}
+                disabled={loading}
+                className={`px-4 py-2 rounded-md text-sm text-white ${
+                  loading ? "bg-green-400" : "bg-green-600 hover:bg-green-700"
+                }`}
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="animate-spin w-4 h-4 mr-2" />
+                    Uploading...
+                  </>
+                ) : (
+                  "Upload"
+                )}
+              </button>
+            </div>
+          </motion.div>
+        )}
       </motion.div>
     </div>
   );

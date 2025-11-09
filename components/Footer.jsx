@@ -1,40 +1,40 @@
-'use client';
+"use client";
 
-import React from 'react';
-import Link from 'next/link';
-import { 
+import React from "react";
+import Link from "next/link";
+import {
   AcademicCapIcon,
   EnvelopeIcon,
   PhoneIcon,
-  MapPinIcon
-} from '@heroicons/react/24/outline';
+  MapPinIcon,
+} from "@heroicons/react/24/outline";
 
 const Footer = () => {
   const footerLinks = {
     platform: [
-      { name: 'Resources', href: '/resources' },
-      { name: 'Virtual School', href: '/virtual-school' },
-      { name: 'Pricing', href: '/pricing' },
-      { name: 'How It Works', href: '/how-it-works' }
+      { name: "Resources", href: "/resources" },
+      { name: "Virtual School", href: "/virtual-school" },
+      { name: "Pricing", href: "/pricing" },
+      { name: "How It Works", href: "/how-it-works" },
     ],
     support: [
-      { name: 'Help Center', href: '/help' },
-      { name: 'Contact Us', href: '/contact' },
-      { name: 'FAQ', href: '/faq' },
-      { name: 'Community', href: '/community' }
+      { name: "Help Center", href: "/help" },
+      { name: "Contact Us", href: "/contact" },
+      { name: "FAQ", href: "/faq" },
+      { name: "Community", href: "/community" },
     ],
     legal: [
-      { name: 'Privacy Policy', href: '/privacy' },
-      { name: 'Terms of Service', href: '/terms' },
-      { name: 'Cookie Policy', href: '/cookies' },
-      { name: 'Refund Policy', href: '/refund' }
+      { name: "Privacy Policy", href: "/privacy" },
+      { name: "Terms of Service", href: "/terms" },
+      { name: "Cookie Policy", href: "/cookies" },
+      { name: "Refund Policy", href: "/refund" },
     ],
     company: [
-      { name: 'About Us', href: '/about' },
-      { name: 'Careers', href: '/careers' },
-      { name: 'Blog', href: '/blog' },
-      { name: 'Press', href: '/press' }
-    ]
+      { name: "About Us", href: "/about" },
+      { name: "Careers", href: "/careers" },
+      { name: "Blog", href: "/blog" },
+      { name: "Press", href: "/press" },
+    ],
   };
 
   return (
@@ -49,10 +49,11 @@ const Footer = () => {
               </div>
               <span className="text-2xl font-bold">EduPlatform</span>
             </Link>
-            
+
             <p className="text-gray-300 mb-6 leading-relaxed max-w-md">
-              Empowering students to excel in the new curriculum with comprehensive resources, 
-              community support, and innovative learning tools.
+              Empowering students to excel in the new curriculum with
+              comprehensive resources, community support, and innovative
+              learning tools.
             </p>
 
             {/* Contact Info */}
@@ -78,7 +79,7 @@ const Footer = () => {
             <ul className="space-y-2">
               {footerLinks.platform.map((link) => (
                 <li key={link.name}>
-                  <Link 
+                  <Link
                     href={link.href}
                     className="text-gray-300 hover:text-white transition-colors duration-200"
                   >
@@ -94,7 +95,7 @@ const Footer = () => {
             <ul className="space-y-2">
               {footerLinks.support.map((link) => (
                 <li key={link.name}>
-                  <Link 
+                  <Link
                     href={link.href}
                     className="text-gray-300 hover:text-white transition-colors duration-200"
                   >
@@ -110,7 +111,7 @@ const Footer = () => {
             <ul className="space-y-2">
               {footerLinks.company.map((link) => (
                 <li key={link.name}>
-                  <Link 
+                  <Link
                     href={link.href}
                     className="text-gray-300 hover:text-white transition-colors duration-200"
                   >
@@ -128,22 +129,22 @@ const Footer = () => {
             <p className="text-gray-400 text-sm">
               © 2025 EduPlatform. All rights reserved.
             </p>
-            
+
             <div className="flex items-center space-x-6 mt-4 md:mt-0">
-              <Link 
-                href="/privacy" 
+              <Link
+                href="/privacy"
                 className="text-gray-400 hover:text-white text-sm transition-colors duration-200"
               >
                 Privacy
               </Link>
-              <Link 
-                href="/terms" 
+              <Link
+                href="/terms"
                 className="text-gray-400 hover:text-white text-sm transition-colors duration-200"
               >
                 Terms
               </Link>
-              <Link 
-                href="/cookies" 
+              <Link
+                href="/cookies"
                 className="text-gray-400 hover:text-white text-sm transition-colors duration-200"
               >
                 Cookies
